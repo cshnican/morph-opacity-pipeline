@@ -8,21 +8,30 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import pandas as pd
+
+_YLABEL = {
+    "opacity": "adjusted opacity  (1 − (cos_form − cos_centroid))",
+    "opacity_raw": "raw opacity  (1 − form→meaning cosine)",
+}
 
 
-def plot_opacity_vs_freq(df: pd.DataFrame, out: Path, title: str) -> None:
+def plot_opacity_vs_freq(
+    df: pd.DataFrame,
+    out: Path,
+    title: str,
+    y: str = "opacity",
+) -> None:
     fig, ax = plt.subplots(figsize=(8, 5.2))
     for cls, sub in df.groupby("class"):
         ax.scatter(
             sub["zipf_freq"],
-            sub["opacity"],
+            sub[y],
             s=18,
             alpha=0.65,
             label=f"{cls} (n={len(sub)})",
         )
     ax.set_xlabel("frequency (Zipf)")
-    ax.set_ylabel("opacity  (1 − form→meaning cosine)")
+    ax.set_ylabel(_YLABEL.get(y, y))
     ax.set_title(title)
     ax.legend(frameon=False, fontsize=8)
     ax.grid(alpha=0.3)
@@ -31,14 +40,19 @@ def plot_opacity_vs_freq(df: pd.DataFrame, out: Path, title: str) -> None:
     plt.close(fig)
 
 
-def plot_opacity_by_class(df: pd.DataFrame, out: Path, title: str) -> None:
+def plot_opacity_by_class(
+    df: pd.DataFrame,
+    out: Path,
+    title: str,
+    y: str = "opacity",
+) -> None:
     order = (
-        df.groupby("class")["opacity"].mean().sort_values(ascending=False).index.tolist()
+        df.groupby("class")[y].mean().sort_values(ascending=False).index.tolist()
     )
-    data = [df.loc[df["class"] == c, "opacity"].to_numpy() for c in order]
+    data = [df.loc[df["class"] == c, y].to_numpy() for c in order]
     fig, ax = plt.subplots(figsize=(7.5, 4.8))
     ax.boxplot(data, tick_labels=order, showfliers=False)
-    ax.set_ylabel("opacity  (1 − form→meaning cosine)")
+    ax.set_ylabel(_YLABEL.get(y, y))
     ax.set_title(title)
     ax.grid(alpha=0.3, axis="y")
     fig.tight_layout()

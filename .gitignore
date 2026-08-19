@@ -7,6 +7,7 @@ venv/
 # Data / caches
 data/glove/
 data/cache/
+data/external/
 *.npy
 *.pt
 

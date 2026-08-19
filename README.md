@@ -21,8 +21,17 @@ Held-out scoring is required. If `g` were trained on the target word itself it
 could memorize *laptop* as a whole string and look spuriously transparent.
 
 ```
-opacity(w) = 1 − cos( g(form_w), v_w )     # g trained without w
+opacity_raw(w) = 1 − cos( g(form_w), v_w )                          # g trained without w
+opacity(w)     = 1 − ( cos(g(form_w), v_w) − cos(mean(v_¬w), v_w) ) # form must beat centroid
 ```
+
+Raw cosine is inflated for frequent GloVe hubs: they sit near the center of the
+space, so a shrunk predictor matches them even when spelling is arbitrary
+(*life*, *time*). Adjusted opacity asks whether form recovers *this* meaning
+beyond a form-blind guess (the fold's training centroid). On GloVe, leading
+principal components — which track frequency — are also dropped before scoring
+(all-but-the-top; Mu & Viswanath 2018). The planted `demo` lexicon has no hub
+geometry, so raw and adjusted rankings agree.
 
 ## Setup
 
@@ -37,6 +46,9 @@ pip install -r requirements.txt
 python run_pipeline.py --mode demo    # planted lexicon; no download
 python run_pipeline.py --mode glove   # English nouns + GloVe 50d (downloaded once)
 python run_pipeline.py --mode both    # default
+python run_pipeline.py --mode glove --whiten-d 0   # skip all-but-the-top
+python run_pipeline.py --mode glove --lexicon data/sample_nouns_alt.csv --tag glove_alt
+python run_pipeline.py --mode glove --lexicon data/morpholex_nouns.csv --tag glove_morpholex
 ```
 
 Outputs:
@@ -46,11 +58,12 @@ Outputs:
 
 | file | what |
 |---|---|
-| `outputs/{tag}_scores.csv` | per-word cosine / opacity, frequency, n_morphemes, class |
+| `outputs/{tag}_scores.csv` | per-word cosine, centroid baseline, raw/adjusted opacity, retrieval rank |
 | `outputs/{tag}_by_class.csv` | mean opacity by morphological class |
-| `outputs/{tag}_regression.csv` | OLS / logit coefficients |
-| `figures/{tag}_opacity_vs_freq.png` | scatter |
-| `figures/{tag}_opacity_by_class.png` | boxplot |
+| `outputs/{tag}_regression.csv` | OLS / logit coefficients (adjusted + raw) |
+| `figures/{tag}_opacity_vs_freq.png` | adjusted opacity scatter |
+| `figures/{tag}_opacity_by_class.png` | adjusted opacity boxplot |
+| `figures/{tag}_opacity_raw_vs_freq.png` | raw cosine opacity (diagnostic) |
 
 `demo` plants the pattern (transparent multimorphs = sum of morpheme vectors;
 monomorphs and lexicalized multimorphs = random meanings; frequency higher
@@ -58,19 +71,23 @@ for opaque items). The residuals recover that ranking — planted transparent
 words get much lower opacity than monomorphs / lexicalized multimorphs —
 which checks the measurement before you trust it on English.
 
-`glove` uses `data/sample_nouns.csv` (hand-classed English nouns) plus
+`glove` uses a noun CSV plus
 [wordfreq](https://github.com/rspeer/wordfreq) Zipf frequencies and GloVe
 wiki-gigaword 50d meaning vectors (downloaded once, then cached under
-`data/cache/`).
+`data/cache/`). Default is the hand-classed `data/sample_nouns.csv`.
+`data/sample_nouns_alt.csv` is a disjoint hand set. `data/morpholex_nouns.csv`
+is built from [MorphoLex-en](https://github.com/hugomailhot/MorphoLex-en)
+(Sánchez-Gutiérrez et al. 2018): simplex → monomorph, affixed →
+transparent_multi, 2+ roots → opaque_multi (compounds; MorphoLex has no
+human transparency ratings).
 
-On the first English pass, **Stage 1 holds** (more frequent nouns are more
-often monomorphemic) but the residual-opacity slope goes the other way:
-frequent words look *more* form-predictable. That is the vector-reliability
-/ length confound discussed in the design — GloVe vectors of rare long
-scientific words are noisier, and a held-out char-ngram model also has
-little evidence for their combining forms. Treat the English opacity slope
-as a measurement diagnostic, not a test of the theory, until split-half
-vector stability and a morpheme-aware split are in place.
+On English, **Stage 1 holds** (more frequent nouns are more often
+monomorphemic). After the centroid adjustment and all-but-the-top,
+morphological class ranks as planted: monomorphs most opaque, transparent
+multimorphs least, and the frequency slope is positive (including among
+multimorphs only). Raw cosine-to-GloVe without those corrections went the
+other way because hubs look form-predictable for free. Split-half vector
+stability is still not estimated (GloVe is a single dump).
 
 ## The two-stage (hurdle) analysis
 
@@ -82,7 +99,9 @@ Matching the two sources of opacity:
   — among words that *have* parts, frequent ones should be more opaque.
 - **Overall OLS:** `opacity ~ frequency` and `opacity ~ frequency + length`
   — length is a *mediator* (frequent → short → fewer morphemes), so both
-  specs are reported.
+  specs are reported. Hubness (mean cosine to 5 nearest neighbors) is added
+  as a covariate in extra specs; that is a typicality control, not a
+  residualization on frequency itself.
 
 The coefficient of interest is `zipf_freq`: positive means more frequent →
 more opaque, which is the downstream prediction of the form–meaning cost model.
@@ -94,14 +113,14 @@ more opaque, which is the downstream prediction of the form–meaning cost model
 - Not an LLM-as-judge transparency rating (easy to add later; validate
   against LADEC / Libben norms if you do).
 - Vector reliability is not split-half estimated (GloVe is a single dump).
-  Frequency itself is a rough reliability proxy; treat the English slope as
-  suggestive until you control split-half stability and polysemy.
+  Adjusted opacity and all-but-the-top remove hubness / frequency-PC
+  confounds; they do not replace a second independent embedding.
 
 ## Layout
 
 ```
 opacity/lexicon.py     sample noun list + Zipf frequencies
-opacity/vectors.py     GloVe download / cache / lookup
+opacity/vectors.py     GloVe download / cache / all-but-the-top / hubness
 opacity/synthetic.py   planted-opacity lexicon
 opacity/model.py       character n-gram → Ridge → meaning
 opacity/scores.py      K-fold held-out residuals

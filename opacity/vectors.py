@@ -41,15 +41,17 @@ def load_glove_for_vocab(
     cache_path = cache_path or (CACHE_DIR / "glove_sample.npz")
     vocab_set = set(w.lower() for w in vocab)
 
+    stored: dict[str, np.ndarray] = {}
     if cache_path.exists():
         blob = np.load(cache_path, allow_pickle=True)
         words = blob["words"].tolist()
         vecs = blob["vectors"]
-        cached = {w: vecs[i] for i, w in enumerate(words) if w in vocab_set}
-        missing = vocab_set - set(cached)
+        stored = {w: vecs[i] for i, w in enumerate(words)}
+        missing = vocab_set - set(stored)
         if not missing:
-            return cached
-        # cache is stale / incomplete — fall through and rebuild
+            return {w: stored[w] for w in vocab_set if w in stored}
+    else:
+        missing = set(vocab_set)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     found: dict[str, np.ndarray] = {}
@@ -65,18 +67,19 @@ def load_glove_for_vocab(
             if not parts:
                 continue
             w = parts[0]
-            if w in vocab_set and len(parts) > dim:
+            if w in missing and len(parts) > dim:
                 found[w] = np.asarray(parts[1 : 1 + dim], dtype=np.float32)
-                if len(found) == len(vocab_set):
+                if len(found) == len(missing):
                     break
 
-    if not found:
+    stored.update(found)
+    if not any(w in stored for w in vocab_set):
         raise RuntimeError("GloVe download succeeded but matched 0 vocabulary items")
 
-    words = np.array(list(found.keys()))
-    vectors = np.stack([found[w] for w in words])
+    words = np.array(list(stored.keys()))
+    vectors = np.stack([stored[w] for w in words])
     np.savez_compressed(cache_path, words=words, vectors=vectors)
-    return found
+    return {w: stored[w] for w in vocab_set if w in stored}
 
 
 def attach_vectors(df: pd.DataFrame, vectors: dict[str, np.ndarray]) -> tuple[pd.DataFrame, np.ndarray]:
@@ -84,5 +87,40 @@ def attach_vectors(df: pd.DataFrame, vectors: dict[str, np.ndarray]) -> tuple[pd
     keep = df["word"].map(lambda w: w in vectors)
     out = df.loc[keep].reset_index(drop=True)
     mat = np.stack([vectors[w] for w in out["word"]])
-    mat = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-8)
+    out = out.copy()
+    out["vec_norm"] = np.linalg.norm(mat, axis=1)
+    mat = mat / (out["vec_norm"].to_numpy()[:, None] + 1e-8)
     return out, mat
+
+
+def all_but_the_top(mat: np.ndarray, n_components: int = 2) -> np.ndarray:
+    """Remove the mean and leading PCs (Mu & Viswanath 2018).
+
+    Those directions in GloVe track frequency / hubness. Scoring form→meaning
+    in the residual subspace stops frequent words from looking transparent
+    just because they sit near the center of the space.
+    """
+    if n_components <= 0:
+        return mat
+    x = np.asarray(mat, dtype=np.float64)
+    x = x - x.mean(axis=0)
+    n, d = x.shape
+    n_components = int(min(n_components, max(d - 1, 0), max(n - 1, 0)))
+    if n_components <= 0:
+        return mat
+    _, _, vt = np.linalg.svd(x, full_matrices=False)
+    pcs = vt[:n_components]
+    x = x - (x @ pcs.T) @ pcs
+    x = x / (np.linalg.norm(x, axis=1, keepdims=True) + 1e-8)
+    return x.astype(mat.dtype, copy=False)
+
+
+def knn_mean_cosine(mat: np.ndarray, k: int = 5) -> np.ndarray:
+    """Mean cosine to the k nearest other words (hubness / typicality)."""
+    sim = np.asarray(mat) @ np.asarray(mat).T
+    np.fill_diagonal(sim, -np.inf)
+    k = int(min(k, mat.shape[0] - 1))
+    if k <= 0:
+        return np.zeros(mat.shape[0])
+    nn = np.partition(sim, -k, axis=1)[:, -k:]
+    return nn.mean(axis=1)
