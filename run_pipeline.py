@@ -2,21 +2,33 @@
 
   python run_pipeline.py --mode demo     # planted lexicon (always works)
   python run_pipeline.py --mode glove    # English nouns + GloVe (downloads once)
-  python run_pipeline.py --mode both     # default
+  python run_pipeline.py --mode subtlex  # SUBTLEX-US ∩ GloVe (downloads once)
+  python run_pipeline.py --mode subtlex --pos Noun  # nouns, subsampled for rank/hubness
+  python run_pipeline.py --mode both     # default (demo + glove)
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
 from opacity.analyze import fit_models, join_scores, model_table, summarize_by_class
-from opacity.lexicon import load_sample_nouns
+from opacity.lexicon import SUBTLEX_GLOVE, SUBTLEX_NOUNS_GLOVE, load_sample_nouns, load_subtlex_us
 from opacity.plot import plot_opacity_by_class, plot_opacity_vs_freq
 from opacity.scores import cross_validated_opacity
 from opacity.synthetic import make_synthetic_lexicon
-from opacity.vectors import all_but_the_top, attach_vectors, knn_mean_cosine, load_glove_for_vocab
+from opacity.vectors import (
+    PAIRWISE_MAX_N,
+    all_but_the_top,
+    attach_vectors,
+    knn_mean_cosine,
+    load_glove_for_vocab,
+)
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "outputs"
@@ -57,6 +69,9 @@ def _write_outputs(tag: str, df: pd.DataFrame, title_stem: str) -> None:
 
 
 def _with_hubness(lexicon: pd.DataFrame, mat) -> pd.DataFrame:
+    if len(lexicon) > PAIRWISE_MAX_N:
+        print(f"skipping hubness (n={len(lexicon)} > {PAIRWISE_MAX_N})")
+        return lexicon
     out = lexicon.copy()
     out["hubness"] = knn_mean_cosine(mat)
     return out
@@ -96,9 +111,69 @@ def run_glove(
     return df
 
 
+def _subsample_aligned(
+    lexicon: pd.DataFrame, mat: np.ndarray, n: int, seed: int
+) -> tuple[pd.DataFrame, np.ndarray]:
+    sampled = lexicon.sample(n=n, random_state=seed).sort_values("word")
+    mat = mat[sampled.index.to_numpy()]
+    return sampled.reset_index(drop=True), mat
+
+
+def run_subtlex(
+    seed: int = 0,
+    whiten_d: int = 2,
+    min_zipf: float = 0.0,
+    max_words: int | None = None,
+    pos: str | None = None,
+    tag: str = "glove_subtlex",
+) -> pd.DataFrame:
+    if max_words is None:
+        max_words = PAIRWISE_MAX_N
+    lexicon = load_subtlex_us(min_zipf=min_zipf, pos=pos)
+    label = f"{pos}s" if pos else "types"
+    print(f"SUBTLEX-US: {len(lexicon)} alphabetic {label} (min_zipf={min_zipf})")
+    print("intersecting with GloVe (streams the dump on the first miss)…")
+    vectors = load_glove_for_vocab(lexicon["word"].tolist())
+    lexicon, mat = attach_vectors(lexicon, vectors)
+    n_pool = len(lexicon)
+    print(f"in GloVe: {n_pool} {label}")
+    if max_words is not None and n_pool > max_words:
+        print(f"subsample {max_words}/{n_pool} (seed={seed})")
+        lexicon, mat = _subsample_aligned(lexicon, mat, max_words, seed)
+    out_csv = SUBTLEX_NOUNS_GLOVE if pos else SUBTLEX_GLOVE
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    save_cols = [c for c in ["word", "zipf_freq", "length", "class", "pos", "n_morphemes", "note"] if c in lexicon.columns]
+    lexicon[save_cols].to_csv(out_csv, index=False)
+    meta = {
+        "seed": seed,
+        "n": int(len(lexicon)),
+        "n_pool": int(n_pool),
+        "pos": pos,
+        "min_zipf": min_zipf,
+        "pairwise_max_n": PAIRWISE_MAX_N,
+        "lexicon": str(out_csv),
+    }
+    meta_path = out_csv.with_suffix(".json")
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+    print(f"wrote GloVe-filtered lexicon → {out_csv}")
+    print(f"wrote subsample metadata → {meta_path} {meta}")
+    if whiten_d:
+        print(f"all-but-the-top: dropping {whiten_d} leading PC(s) (fit on train folds)")
+        lexicon = _with_hubness(lexicon, all_but_the_top(mat, n_components=whiten_d))
+    else:
+        lexicon = _with_hubness(lexicon, mat)
+    scores = cross_validated_opacity(
+        lexicon["word"], mat, n_splits=5, seed=seed, whiten_d=whiten_d
+    )
+    df = join_scores(lexicon, scores)
+    title = "SUBTLEX-US nouns ∩ GloVe" if pos else "SUBTLEX-US ∩ GloVe"
+    _write_outputs(tag, df, title)
+    return df
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--mode", choices=("demo", "glove", "both"), default="both")
+    p.add_argument("--mode", choices=("demo", "glove", "subtlex", "both"), default="both")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
         "--whiten-d",
@@ -117,6 +192,26 @@ def main() -> None:
         default="glove",
         help="Output prefix for GloVe tables/figures (default: glove)",
     )
+    p.add_argument(
+        "--min-zipf",
+        type=float,
+        default=0.0,
+        help="SUBTLEX: drop types below this Zipf (default: 0, i.e. GloVe filter only)",
+    )
+    p.add_argument(
+        "--max-words",
+        type=int,
+        default=None,
+        help=(
+            "SUBTLEX: after the GloVe intersect, randomly subsample to this many "
+            f"types (seed from --seed; default {PAIRWISE_MAX_N} so rank/hubness fit)."
+        ),
+    )
+    p.add_argument(
+        "--pos",
+        default=None,
+        help="SUBTLEX: keep this dominant POS only (e.g. Noun)",
+    )
     args = p.parse_args()
 
     if args.mode in ("demo", "both"):
@@ -131,6 +226,17 @@ def main() -> None:
             lexicon_path=args.lexicon,
             tag=args.tag,
             title_stem=title,
+        )
+    if args.mode == "subtlex":
+        pos = args.pos
+        tag = args.tag if args.tag != "glove" else "glove_subtlex"
+        run_subtlex(
+            seed=args.seed,
+            whiten_d=args.whiten_d,
+            min_zipf=args.min_zipf,
+            max_words=args.max_words,
+            pos=pos,
+            tag=tag,
         )
 
 

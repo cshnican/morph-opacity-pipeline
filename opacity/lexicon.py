@@ -1,7 +1,9 @@
-"""Load noun lexicons and attach frequency / length features."""
+"""Load lexicons and attach frequency / length features."""
 
 from __future__ import annotations
 
+import math
+import urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +12,15 @@ from wordfreq import zipf_frequency
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 MORPHOLEX_XLSX = DATA_DIR / "external" / "MorphoLEX_en.xlsx"
 MORPHOLEX_NOUNS = DATA_DIR / "morpholex_nouns.csv"
+SUBTLEX_PATH = DATA_DIR / "external" / "SUBTLEXus74286.txt"
+SUBTLEX_GLOVE = DATA_DIR / "subtlex_glove.csv"
+SUBTLEX_NOUNS_GLOVE = DATA_DIR / "subtlex_nouns_glove.csv"
+SUBTLEX_URL = (
+    "https://raw.githubusercontent.com/cltl/python-for-text-analysis/master/"
+    "Data/SUBTLEX-US/SUBTLEXus74286wordstextversion.txt"
+)
+SUBTLEX_POS_PATH = DATA_DIR / "external" / "SUBTLEX-US_POS_Zipf.xlsx"
+SUBTLEX_POS_URL = "https://osf.io/download/55d4847a8c5e4a5fe4a6c8d2/"
 
 
 def load_sample_nouns(path: Path | None = None) -> pd.DataFrame:
@@ -18,11 +29,23 @@ def load_sample_nouns(path: Path | None = None) -> pd.DataFrame:
     df["word"] = df["word"].str.strip().str.lower()
     df = df.drop_duplicates("word").reset_index(drop=True)
     df = df[df["word"].str.fullmatch(r"[a-z]+")].copy()
-    df["n_morphemes"] = df["n_morphemes"].astype(int)
-    df["is_monomorph"] = df["n_morphemes"] == 1
+    if "n_morphemes" in df.columns:
+        df["n_morphemes"] = pd.to_numeric(df["n_morphemes"], errors="coerce")
+        df["is_monomorph"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
+        known = df["n_morphemes"].notna()
+        df.loc[known, "is_monomorph"] = df.loc[known, "n_morphemes"] == 1
+    else:
+        df["n_morphemes"] = pd.NA
+        df["is_monomorph"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
+    if "class" not in df.columns:
+        df["class"] = "unlabeled"
+    else:
+        df["class"] = df["class"].fillna("unlabeled")
     df["length"] = df["word"].str.len()
-    df["zipf_freq"] = [zipf_frequency(w, "en") for w in df["word"]]
+    if "zipf_freq" not in df.columns:
+        df["zipf_freq"] = [zipf_frequency(w, "en") for w in df["word"]]
     df["log_freq"] = df["zipf_freq"]  # Zipf is already log10(freq) + constant
+    df = attach_subtlex_pos(df)
     return df.reset_index(drop=True)
 
 
@@ -133,3 +156,123 @@ def load_morpholex_nouns(path: Path | None = None, rebuild: bool = False) -> pd.
     if rebuild or not path.exists():
         build_morpholex_nouns(out=path)
     return load_sample_nouns(path)
+
+
+def download_subtlex(path: Path | None = None, url: str = SUBTLEX_URL) -> Path:
+    path = path or SUBTLEX_PATH
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "morph-opacity-pipeline"})
+    with urllib.request.urlopen(req, timeout=120) as src, path.open("wb") as dst:
+        dst.write(src.read())
+    return path
+
+
+def download_subtlex_pos(path: Path | None = None, url: str = SUBTLEX_POS_URL) -> Path:
+    path = path or SUBTLEX_POS_PATH
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "morph-opacity-pipeline"})
+    with urllib.request.urlopen(req, timeout=180) as src, path.open("wb") as dst:
+        dst.write(src.read())
+    return path
+
+
+def load_subtlex_pos_table(path: Path | None = None) -> pd.DataFrame:
+    """Dominant CLAWS POS per SUBTLEX-US type (Brysbaert, New & Keuleers 2012)."""
+    cache = DATA_DIR / "cache" / "subtlex_pos.csv"
+    if cache.exists():
+        return pd.read_csv(cache)
+    xlsx = download_subtlex_pos(path)
+    raw = pd.read_excel(xlsx, sheet_name=0, usecols=["Word", "Dom_PoS_SUBTLEX"])
+    raw = raw.rename(columns={"Word": "word", "Dom_PoS_SUBTLEX": "pos"})
+    raw["word"] = raw["word"].astype(str).str.strip().str.lower()
+    raw = raw.loc[raw["word"].str.fullmatch(r"[a-z]+")].drop_duplicates("word")
+    raw["pos"] = raw["pos"].where(raw["pos"].notna(), "unknown").astype(str)
+    raw.loc[raw["pos"].isin(["nan", "#N/A", "None", "NaN"]), "pos"] = "unknown"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    raw[["word", "pos"]].to_csv(cache, index=False)
+    return raw[["word", "pos"]]
+
+
+def attach_subtlex_pos(df: pd.DataFrame) -> pd.DataFrame:
+    pos = load_subtlex_pos_table()
+    out = df.merge(pos, on="word", how="left", suffixes=("", "_subtlex"))
+    if "pos_subtlex" in out.columns:
+        out["pos"] = out["pos"].combine_first(out["pos_subtlex"])
+        out = out.drop(columns=["pos_subtlex"])
+    out["pos"] = out["pos"].fillna("unknown")
+    return out
+
+
+def load_subtlex_us(
+    path: Path | None = None,
+    min_zipf: float = 0.0,
+    morpholex: Path | None = None,
+    pos: str | None = None,
+) -> pd.DataFrame:
+    """SUBTLEX-US types (Brysbaert & New 2009), letters only.
+
+    If `pos` is set (e.g. \"Noun\"), load the POS+Zipf spreadsheet (Brysbaert,
+    New & Keuleers 2012) and keep rows whose dominant CLAWS tag matches.
+    Zipf is the official SUBTLEX Zipf-value when POS is used, otherwise
+    log10(SUBTLWF)+3. Morphology is unlabeled unless the word is in MorphoLex.
+    """
+    if pos:
+        xlsx = download_subtlex_pos()
+        raw = pd.read_excel(xlsx, sheet_name=0)
+        raw = raw.rename(columns={"Word": "word", "Zipf-value": "zipf_freq"})
+        raw["word"] = raw["word"].astype(str).str.strip().str.lower()
+        dom = raw["Dom_PoS_SUBTLEX"].astype(str)
+        df = raw.loc[dom.str.fullmatch(pos, case=False)].copy()
+        df = df.loc[df["word"].str.fullmatch(r"[a-z]+")].drop_duplicates("word")
+        df["zipf_freq"] = pd.to_numeric(df["zipf_freq"], errors="coerce")
+        df["note"] = f"subtlex-us {pos.lower()}"
+    else:
+        path = download_subtlex(path)
+        raw = pd.read_csv(path, sep="\t")
+        raw = raw.rename(columns={"Word": "word"})
+        raw["word"] = raw["word"].astype(str).str.strip().str.lower()
+        df = raw.loc[raw["word"].str.fullmatch(r"[a-z]+")].copy()
+        df = df.drop_duplicates("word")
+        df["zipf_freq"] = df["SUBTLWF"].map(lambda x: math.log10(max(float(x), 1e-12)) + 3.0)
+        df["note"] = "subtlex-us"
+    df = df.loc[df["zipf_freq"].notna() & (df["zipf_freq"] >= min_zipf)].copy()
+    df = df.sort_values(["zipf_freq", "word"], ascending=[False, True])
+    df["length"] = df["word"].str.len()
+    df["class"] = "unlabeled"
+    df["n_morphemes"] = pd.NA
+
+    ml_path = morpholex if morpholex is not None else MORPHOLEX_NOUNS
+    if ml_path.exists():
+        ml = pd.read_csv(ml_path, usecols=lambda c: c in {"word", "class", "n_morphemes", "note"})
+        ml["word"] = ml["word"].str.strip().str.lower()
+        ml = ml.drop_duplicates("word")
+        df = df.merge(ml, on="word", how="left", suffixes=("", "_ml"))
+        df["class"] = df["class_ml"].fillna(df["class"])
+        df["n_morphemes"] = df["n_morphemes_ml"].combine_first(df["n_morphemes"])
+        if "note_ml" in df.columns:
+            df["note"] = df["note_ml"].fillna(df["note"])
+        drop = [c for c in df.columns if c.endswith("_ml")]
+        df = df.drop(columns=drop)
+
+    df["n_morphemes"] = pd.to_numeric(df["n_morphemes"], errors="coerce")
+    df["is_monomorph"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
+    known = df["n_morphemes"].notna()
+    df.loc[known, "is_monomorph"] = df.loc[known, "n_morphemes"] == 1
+    df["log_freq"] = df["zipf_freq"]
+    df = attach_subtlex_pos(df)
+    keep = [
+        "word",
+        "zipf_freq",
+        "length",
+        "class",
+        "pos",
+        "n_morphemes",
+        "is_monomorph",
+        "note",
+        "log_freq",
+    ]
+    return df[keep].reset_index(drop=True)

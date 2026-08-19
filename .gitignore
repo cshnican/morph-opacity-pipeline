@@ -8,6 +8,8 @@ venv/
 data/glove/
 data/cache/
 data/external/
+data/subtlex_glove.csv
+data/subtlex_glove.json
 *.npy
 *.pt
 

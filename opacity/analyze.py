@@ -46,15 +46,21 @@ def fit_models(df: pd.DataFrame) -> dict:
     models["opacity_freq_len"] = smf.ols(
         "opacity ~ zipf_freq + length", data=df
     ).fit()
-    models["monomorph_freq"] = smf.logit(
-        "is_monomorph ~ zipf_freq", data=df.assign(is_monomorph=df["is_monomorph"].astype(int))
-    ).fit(disp=False)
 
-    multi = df.loc[~df["is_monomorph"]]
-    if len(multi) >= 20:
-        models["opacity_multi_freq_len"] = smf.ols(
-            "opacity ~ zipf_freq + length", data=multi
-        ).fit()
+    labeled = df
+    if "is_monomorph" in df.columns:
+        labeled = df.loc[df["is_monomorph"].notna()].copy()
+    multi = pd.DataFrame()
+    if len(labeled) >= 50 and labeled["is_monomorph"].nunique() == 2:
+        models["monomorph_freq"] = smf.logit(
+            "is_monomorph ~ zipf_freq",
+            data=labeled.assign(is_monomorph=labeled["is_monomorph"].astype(int)),
+        ).fit(disp=False)
+        multi = labeled.loc[~labeled["is_monomorph"].astype(bool)]
+        if len(multi) >= 20:
+            models["opacity_multi_freq_len"] = smf.ols(
+                "opacity ~ zipf_freq + length", data=multi
+            ).fit()
 
     if "opacity_raw" in df.columns:
         models["opacity_raw_freq"] = smf.ols("opacity_raw ~ zipf_freq", data=df).fit()

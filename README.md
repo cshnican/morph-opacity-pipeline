@@ -49,6 +49,9 @@ python run_pipeline.py --mode both    # default
 python run_pipeline.py --mode glove --whiten-d 0   # skip all-but-the-top
 python run_pipeline.py --mode glove --lexicon data/sample_nouns_alt.csv --tag glove_alt
 python run_pipeline.py --mode glove --lexicon data/morpholex_nouns.csv --tag glove_morpholex
+python run_pipeline.py --mode subtlex # SUBTLEX ∩ GloVe, subsample 30k (seed=0) with rank/hubness
+python run_pipeline.py --mode subtlex --max-words 25000 --seed 0
+python score_word.py dog --lexicon data/subtlex_glove.csv
 ```
 
 Outputs:
@@ -61,9 +64,9 @@ Outputs:
 | `outputs/{tag}_scores.csv` | per-word cosine, centroid baseline, raw/adjusted opacity, retrieval rank |
 | `outputs/{tag}_by_class.csv` | mean opacity by morphological class |
 | `outputs/{tag}_regression.csv` | OLS / logit coefficients (adjusted + raw) |
-| `figures/{tag}_opacity_vs_freq.png` | adjusted opacity scatter |
+| `figures/{tag}_opacity_vs_freq.png` | adjusted opacity scatter (colored by SUBTLEX POS when available) |
 | `figures/{tag}_opacity_by_class.png` | adjusted opacity boxplot |
-| `figures/{tag}_opacity_raw_vs_freq.png` | raw cosine opacity (diagnostic) |
+| `figures/{tag}_opacity_raw_vs_freq.png` | raw cosine opacity (same POS coloring) |
 
 `demo` plants the pattern (transparent multimorphs = sum of morpheme vectors;
 monomorphs and lexicalized multimorphs = random meanings; frequency higher
@@ -80,6 +83,15 @@ is built from [MorphoLex-en](https://github.com/hugomailhot/MorphoLex-en)
 (Sánchez-Gutiérrez et al. 2018): simplex → monomorph, affixed →
 transparent_multi, 2+ roots → opaque_multi (compounds; MorphoLex has no
 human transparency ratings).
+
+`subtlex` trains `g` on [SUBTLEX-US](https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus)
+(Brysbaert & New 2009): alphabetic types, intersected with GloVe so every
+training row has a meaning vector, then randomly subsampled to 30,000
+(`--seed`, written to `data/subtlex_glove.json`) so rank and hubness fit in
+memory (~48 GB; n×n float32). Zipf is `log10(SUBTLWF)+3`. Words that also
+appear in MorphoLex keep those class labels; the rest are `unlabeled`. The
+hurdle models run only on the labeled overlap. The subsampled list is written
+to `data/subtlex_glove.csv` for `score_word.py`.
 
 On English, **Stage 1 holds** (more frequent nouns are more often
 monomorphemic). After the centroid adjustment and all-but-the-top,
@@ -119,7 +131,7 @@ more opaque, which is the downstream prediction of the form–meaning cost model
 ## Layout
 
 ```
-opacity/lexicon.py     sample noun list + Zipf frequencies
+opacity/lexicon.py     sample / MorphoLex / SUBTLEX-US lists + Zipf frequencies
 opacity/vectors.py     GloVe download / cache / all-but-the-top / hubness
 opacity/synthetic.py   planted-opacity lexicon
 opacity/model.py       character n-gram → Ridge → meaning

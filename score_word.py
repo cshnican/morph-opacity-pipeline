@@ -3,6 +3,7 @@
   python score_word.py electrocardiogram
   python score_word.py dog laptop teacher
   python score_word.py hologram --lexicon data/morpholex_nouns.csv
+  python score_word.py hologram --lexicon data/subtlex_glove.csv
 
 Trains g(form)→meaning on the lexicon without the query word, then:
 

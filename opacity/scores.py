@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.model_selection import KFold
 
 from opacity.model import make_form_model, row_cosine
+from opacity.vectors import PAIRWISE_MAX_N
 
 
 def cross_validated_opacity(
@@ -17,6 +18,8 @@ def cross_validated_opacity(
     alpha: float = 8.0,
     seed: int = 0,
     whiten_d: int = 0,
+    min_df: int | None = None,
+    compute_rank: bool | None = None,
 ) -> pd.DataFrame:
     """
     For each word, train g(form)→meaning on the *other* folds, then score
@@ -37,42 +40,53 @@ def cross_validated_opacity(
 
     If `whiten_d` > 0, each fold drops that many leading PCs estimated on
     *training* vectors only (all-but-the-top), then scores in that subspace.
+
+    `rank_frac` needs a large similarity matrix, so it is skipped when n exceeds
+    `PAIRWISE_MAX_N` unless `compute_rank=True`. `min_df` defaults to 2 for
+    large lexicons.
     """
     words = np.asarray(list(words))
     n = len(words)
     if n < n_splits:
         raise ValueError(f"need at least {n_splits} words, got {n}")
+    if min_df is None:
+        min_df = 2 if n >= 3000 else 1
+    if compute_rank is None:
+        compute_rank = n <= PAIRWISE_MAX_N
 
     pred = np.zeros_like(vectors)
     null_pred = np.zeros_like(vectors)
     targets = np.zeros_like(vectors)
-    rank_frac = np.zeros(n)
+    rank_frac = np.full(n, np.nan) if compute_rank else None
     fold_id = np.full(n, -1, dtype=int)
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
     for k, (tr, te) in enumerate(kf.split(words)):
+        if n >= 5000:
+            print(f"  fold {k + 1}/{n_splits} (n_train={len(tr)}, min_df={min_df})")
         v_tr, v_all = _fold_space(vectors, tr, whiten_d)
-        model = make_form_model(ngram_range=ngram_range, alpha=alpha)
+        model = make_form_model(ngram_range=ngram_range, alpha=alpha, min_df=min_df)
         model.fit(words[tr], v_tr)
         pred[te] = model.predict(words[te])
         null_pred[te] = v_tr.mean(axis=0)
         targets[te] = v_all[te]
-        rank_frac[te] = _retrieval_rank_frac(pred[te], v_all[te], v_all)
+        if compute_rank:
+            rank_frac[te] = _retrieval_rank_frac(pred[te], v_all[te], v_all)
         fold_id[te] = k
 
     cosine = np.clip(row_cosine(pred, targets), -1.0, 1.0)
     cosine_null = np.clip(row_cosine(null_pred, targets), -1.0, 1.0)
-    return pd.DataFrame(
-        {
-            "word": words,
-            "cosine": cosine,
-            "cosine_null": cosine_null,
-            "opacity_raw": 1.0 - cosine,
-            "opacity": 1.0 - (cosine - cosine_null),
-            "rank_frac": rank_frac,
-            "fold": fold_id,
-        }
-    )
+    out = {
+        "word": words,
+        "cosine": cosine,
+        "cosine_null": cosine_null,
+        "opacity_raw": 1.0 - cosine,
+        "opacity": 1.0 - (cosine - cosine_null),
+        "fold": fold_id,
+    }
+    if compute_rank:
+        out["rank_frac"] = rank_frac
+    return pd.DataFrame(out)
 
 
 def _fold_space(
@@ -148,7 +162,8 @@ def score_query_words(
         stacked = np.vstack([train_vectors[mask], q[None, :]])
         tr = np.arange(mask.sum())
         v_tr, v_all = _fold_space(stacked, tr, whiten_d)
-        model = make_form_model(ngram_range=ngram_range, alpha=alpha)
+        min_df = 2 if mask.sum() >= 3000 else 1
+        model = make_form_model(ngram_range=ngram_range, alpha=alpha, min_df=min_df)
         model.fit(train_words[mask], v_tr)
         pred = model.predict(np.array([word]))
         centroid = v_tr.mean(axis=0, keepdims=True)

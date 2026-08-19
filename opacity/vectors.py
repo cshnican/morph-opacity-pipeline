@@ -12,6 +12,10 @@ import pandas as pd
 
 CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "cache"
 
+# Largest n where a dense n×n float32 similarity matrix is comfortable on this
+# machine (~48 GB RAM): 30k × 30k × 4 bytes ≈ 3.6 GB, plus a 6k × 30k rank fold.
+PAIRWISE_MAX_N = 30_000
+
 # ~66MB gzipped word2vec-format GloVe 50d (gensim-data mirror).
 GLOVE_URL = (
     "https://github.com/piskvorky/gensim-data/releases/download/"
@@ -117,7 +121,8 @@ def all_but_the_top(mat: np.ndarray, n_components: int = 2) -> np.ndarray:
 
 def knn_mean_cosine(mat: np.ndarray, k: int = 5) -> np.ndarray:
     """Mean cosine to the k nearest other words (hubness / typicality)."""
-    sim = np.asarray(mat) @ np.asarray(mat).T
+    x = np.asarray(mat, dtype=np.float32)
+    sim = x @ x.T
     np.fill_diagonal(sim, -np.inf)
     k = int(min(k, mat.shape[0] - 1))
     if k <= 0:

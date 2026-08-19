@@ -13,7 +13,11 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import Pipeline
 
 
-def make_form_model(ngram_range: tuple[int, int] = (2, 5), alpha: float = 8.0) -> Pipeline:
+def make_form_model(
+    ngram_range: tuple[int, int] = (2, 5),
+    alpha: float = 8.0,
+    min_df: int = 1,
+) -> Pipeline:
     return Pipeline(
         [
             (
@@ -21,7 +25,7 @@ def make_form_model(ngram_range: tuple[int, int] = (2, 5), alpha: float = 8.0) -
                 TfidfVectorizer(
                     analyzer="char",
                     ngram_range=ngram_range,
-                    min_df=1,
+                    min_df=min_df,
                     lowercase=True,
                 ),
             ),
