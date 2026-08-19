@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Data / caches
+data/glove/
+data/cache/
+*.npy
+*.pt
+
+# Outputs
+outputs/
+
+# macOS
+.DS_Store
+Icon?
