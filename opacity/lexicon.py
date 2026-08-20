@@ -6,12 +6,15 @@ import math
 import urllib.request
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from wordfreq import zipf_frequency
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 MORPHOLEX_XLSX = DATA_DIR / "external" / "MorphoLEX_en.xlsx"
 MORPHOLEX_NOUNS = DATA_DIR / "morpholex_nouns.csv"
+LADEC_CSV = DATA_DIR / "external" / "LADECv1-2019.csv"
+LADEC_COMPOUNDS = DATA_DIR / "ladec_compounds.csv"
 SUBTLEX_PATH = DATA_DIR / "external" / "SUBTLEXus74286.txt"
 SUBTLEX_GLOVE = DATA_DIR / "subtlex_glove.csv"
 SUBTLEX_NOUNS_GLOVE = DATA_DIR / "subtlex_nouns_glove.csv"
@@ -23,8 +26,8 @@ SUBTLEX_POS_PATH = DATA_DIR / "external" / "SUBTLEX-US_POS_Zipf.xlsx"
 SUBTLEX_POS_URL = "https://osf.io/download/55d4847a8c5e4a5fe4a6c8d2/"
 
 
-def load_sample_nouns(path: Path | None = None) -> pd.DataFrame:
-    path = path or (DATA_DIR / "sample_nouns.csv")
+def load_word_csv(path: Path | None = None) -> pd.DataFrame:
+    path = path or MORPHOLEX_NOUNS
     df = pd.read_csv(path)
     df["word"] = df["word"].str.strip().str.lower()
     df = df.drop_duplicates("word").reset_index(drop=True)
@@ -155,7 +158,61 @@ def load_morpholex_nouns(path: Path | None = None, rebuild: bool = False) -> pd.
     path = path or MORPHOLEX_NOUNS
     if rebuild or not path.exists():
         build_morpholex_nouns(out=path)
-    return load_sample_nouns(path)
+    return load_word_csv(path)
+
+
+def build_ladec_compounds(src: Path | None = None, out: Path | None = None) -> pd.DataFrame:
+    """Closed compounds from LADEC (Gagné, Spalding & Schmidtke 2019).
+
+    correctParse=yes, letters only. Class is a median split on human
+    predictability (ratingcmp): high → transparent_multi, low → opaque_multi.
+    Zipf is LADEC's SUBTLEX Zipfvalue when present, else wordfreq.
+    """
+    src = src or LADEC_CSV
+    out = out or LADEC_COMPOUNDS
+    if not src.exists():
+        raise FileNotFoundError(
+            f"LADEC not found at {src}. Download LADECv1-2019.csv "
+            "(Gagné, Spalding & Schmidtke 2019)."
+        )
+    raw = pd.read_csv(src)
+    df = raw.copy()
+    df["word"] = df["stim"].astype(str).str.strip().str.lower()
+    yes = df["correctParse"].astype(str).str.lower().isin(["yes", "1", "true"])
+    df = df.loc[yes & df["word"].str.fullmatch(r"[a-z]+")].copy()
+    df = df.dropna(subset=["ratingcmp"]).drop_duplicates("word")
+    if "Zipfvalue" in df.columns:
+        df["zipf_freq"] = pd.to_numeric(df["Zipfvalue"], errors="coerce")
+    else:
+        df["zipf_freq"] = pd.NA
+    missing = df["zipf_freq"].isna()
+    if missing.any():
+        df.loc[missing, "zipf_freq"] = [
+            zipf_frequency(w, "en") for w in df.loc[missing, "word"]
+        ]
+    med = float(df["ratingcmp"].median())
+    df["class"] = np.where(
+        df["ratingcmp"] >= med, "transparent_multi", "opaque_multi"
+    )
+    df["n_morphemes"] = 2
+    c1 = df["c1"] if "c1" in df.columns else ""
+    c2 = df["c2"] if "c2" in df.columns else ""
+    df["note"] = [
+        f"{a}+{b} ratingcmp={r:.1f}"
+        for a, b, r in zip(c1, c2, df["ratingcmp"])
+    ]
+    keep = ["word", "n_morphemes", "class", "note", "ratingcmp", "zipf_freq"]
+    extra = [c for c in ("c1", "c2") if c in df.columns]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df[keep + extra].to_csv(out, index=False)
+    return df[keep + extra]
+
+
+def load_ladec_compounds(path: Path | None = None, rebuild: bool = False) -> pd.DataFrame:
+    path = path or LADEC_COMPOUNDS
+    if rebuild or not path.exists():
+        build_ladec_compounds(out=path)
+    return load_word_csv(path)
 
 
 def download_subtlex(path: Path | None = None, url: str = SUBTLEX_URL) -> Path:

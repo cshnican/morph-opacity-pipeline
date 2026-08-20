@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from opacity.lexicon import load_sample_nouns
+from opacity.lexicon import load_word_csv
 from opacity.scores import score_query_words
 from opacity.vectors import attach_vectors, load_glove_for_vocab
 
@@ -35,8 +35,8 @@ def main() -> None:
     p.add_argument(
         "--lexicon",
         type=Path,
-        default=ROOT / "data" / "sample_nouns.csv",
-        help="training noun CSV with a 'word' column",
+        default=ROOT / "data" / "morpholex_nouns.csv",
+        help="training CSV with a 'word' column (default: MorphoLex nouns)",
     )
     p.add_argument(
         "--whiten-d",
@@ -51,13 +51,13 @@ def main() -> None:
     if bad:
         sys.exit(f"only a-z words are supported; got {bad}")
 
-    lexicon = load_sample_nouns(args.lexicon)
+    lexicon = load_word_csv(args.lexicon)
     vocab = list(dict.fromkeys(lexicon["word"].tolist() + queries))
-    print(f"training lexicon: {len(lexicon)} nouns from {args.lexicon}", file=sys.stderr)
+    print(f"training lexicon: {len(lexicon)} words from {args.lexicon}", file=sys.stderr)
     print("loading GloVe (cached after the first download)…", file=sys.stderr)
     glove = load_glove_for_vocab(vocab)
     train_df, train_mat = attach_vectors(lexicon, glove)
-    print(f"in GloVe: {len(train_df)} training nouns", file=sys.stderr)
+    print(f"in GloVe: {len(train_df)} training words", file=sys.stderr)
 
     scores = score_query_words(
         queries,

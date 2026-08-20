@@ -1,10 +1,10 @@
 """Run the morphological-opacity pipeline.
 
   python run_pipeline.py --mode demo     # planted lexicon (always works)
-  python run_pipeline.py --mode glove    # English nouns + GloVe (downloads once)
+  python run_pipeline.py --mode morpholex  # MorphoLex nouns ∩ GloVe
   python run_pipeline.py --mode subtlex  # SUBTLEX-US ∩ GloVe (downloads once)
-  python run_pipeline.py --mode subtlex --pos Noun  # nouns, subsampled for rank/hubness
-  python run_pipeline.py --mode both     # default (demo + glove)
+  python run_pipeline.py --mode ladec    # LADEC compounds ∩ GloVe
+  python run_pipeline.py --mode both     # default (demo + morpholex)
 """
 
 from __future__ import annotations
@@ -18,7 +18,14 @@ import numpy as np
 import pandas as pd
 
 from opacity.analyze import fit_models, join_scores, model_table, summarize_by_class
-from opacity.lexicon import SUBTLEX_GLOVE, SUBTLEX_NOUNS_GLOVE, load_sample_nouns, load_subtlex_us
+from opacity.lexicon import (
+    SUBTLEX_GLOVE,
+    SUBTLEX_NOUNS_GLOVE,
+    load_ladec_compounds,
+    load_morpholex_nouns,
+    load_word_csv,
+    load_subtlex_us,
+)
 from opacity.plot import plot_opacity_by_class, plot_opacity_vs_freq
 from opacity.scores import cross_validated_opacity
 from opacity.synthetic import make_synthetic_lexicon
@@ -90,11 +97,32 @@ def run_glove(
     seed: int = 0,
     whiten_d: int = 2,
     lexicon_path: Path | None = None,
-    tag: str = "glove",
-    title_stem: str = "English nouns (GloVe)",
+    tag: str = "glove_morpholex",
+    title_stem: str = "MorphoLex nouns (GloVe)",
 ) -> pd.DataFrame:
-    lexicon = load_sample_nouns(lexicon_path)
-    print(f"sample lexicon: {len(lexicon)} unique nouns ({lexicon_path or 'data/sample_nouns.csv'})")
+    if lexicon_path is None:
+        raise ValueError("run_glove requires lexicon_path (an external word CSV)")
+    lexicon = load_word_csv(lexicon_path)
+    print(f"lexicon: {len(lexicon)} unique types ({lexicon_path})")
+    vectors = load_glove_for_vocab(lexicon["word"].tolist())
+    lexicon, mat = attach_vectors(lexicon, vectors)
+    print(f"in GloVe: {len(lexicon)} types")
+    if whiten_d:
+        print(f"all-but-the-top: dropping {whiten_d} leading PC(s) (fit on train folds)")
+        lexicon = _with_hubness(lexicon, all_but_the_top(mat, n_components=whiten_d))
+    else:
+        lexicon = _with_hubness(lexicon, mat)
+    scores = cross_validated_opacity(
+        lexicon["word"], mat, n_splits=5, seed=seed, whiten_d=whiten_d
+    )
+    df = join_scores(lexicon, scores)
+    _write_outputs(tag, df, title_stem)
+    return df
+
+
+def run_morpholex(seed: int = 0, whiten_d: int = 2, tag: str = "glove_morpholex") -> pd.DataFrame:
+    lexicon = load_morpholex_nouns()
+    print(f"MorphoLex nouns: {len(lexicon)} unique types")
     vectors = load_glove_for_vocab(lexicon["word"].tolist())
     lexicon, mat = attach_vectors(lexicon, vectors)
     print(f"in GloVe: {len(lexicon)} nouns")
@@ -107,7 +135,26 @@ def run_glove(
         lexicon["word"], mat, n_splits=5, seed=seed, whiten_d=whiten_d
     )
     df = join_scores(lexicon, scores)
-    _write_outputs(tag, df, title_stem)
+    _write_outputs(tag, df, "MorphoLex nouns (GloVe)")
+    return df
+
+
+def run_ladec(seed: int = 0, whiten_d: int = 2, tag: str = "glove_ladec") -> pd.DataFrame:
+    lexicon = load_ladec_compounds()
+    print(f"LADEC compounds: {len(lexicon)} unique types")
+    vectors = load_glove_for_vocab(lexicon["word"].tolist())
+    lexicon, mat = attach_vectors(lexicon, vectors)
+    print(f"in GloVe: {len(lexicon)} compounds")
+    if whiten_d:
+        print(f"all-but-the-top: dropping {whiten_d} leading PC(s) (fit on train folds)")
+        lexicon = _with_hubness(lexicon, all_but_the_top(mat, n_components=whiten_d))
+    else:
+        lexicon = _with_hubness(lexicon, mat)
+    scores = cross_validated_opacity(
+        lexicon["word"], mat, n_splits=5, seed=seed, whiten_d=whiten_d
+    )
+    df = join_scores(lexicon, scores)
+    _write_outputs(tag, df, "LADEC compounds (GloVe)")
     return df
 
 
@@ -173,7 +220,7 @@ def run_subtlex(
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--mode", choices=("demo", "glove", "subtlex", "both"), default="both")
+    p.add_argument("--mode", choices=("demo", "morpholex", "glove", "subtlex", "ladec", "both"), default="both")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
         "--whiten-d",
@@ -185,7 +232,7 @@ def main() -> None:
         "--lexicon",
         type=Path,
         default=None,
-        help="CSV of hand-classed nouns (default: data/sample_nouns.csv)",
+        help="External word CSV with a 'word' column (required for --mode glove)",
     )
     p.add_argument(
         "--tag",
@@ -216,16 +263,18 @@ def main() -> None:
 
     if args.mode in ("demo", "both"):
         run_demo(seed=args.seed)
-    if args.mode in ("glove", "both"):
-        title = "English nouns (GloVe)"
-        if args.lexicon is not None:
-            title = f"English nouns (GloVe, {args.lexicon.name})"
+    if args.mode in ("morpholex", "both"):
+        run_morpholex(seed=args.seed, whiten_d=args.whiten_d)
+    if args.mode == "glove":
+        if args.lexicon is None:
+            raise SystemExit("--mode glove requires --lexicon (an external word CSV)")
+        tag = args.tag if args.tag != "glove" else args.lexicon.stem
         run_glove(
             seed=args.seed,
             whiten_d=args.whiten_d,
             lexicon_path=args.lexicon,
-            tag=args.tag,
-            title_stem=title,
+            tag=tag,
+            title_stem=f"{args.lexicon.name} (GloVe)",
         )
     if args.mode == "subtlex":
         pos = args.pos
@@ -238,6 +287,8 @@ def main() -> None:
             pos=pos,
             tag=tag,
         )
+    if args.mode == "ladec":
+        run_ladec(seed=args.seed, whiten_d=args.whiten_d)
 
 
 if __name__ == "__main__":

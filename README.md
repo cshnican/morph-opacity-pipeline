@@ -43,14 +43,14 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
-python run_pipeline.py --mode demo    # planted lexicon; no download
-python run_pipeline.py --mode glove   # English nouns + GloVe 50d (downloaded once)
-python run_pipeline.py --mode both    # default
-python run_pipeline.py --mode glove --whiten-d 0   # skip all-but-the-top
-python run_pipeline.py --mode glove --lexicon data/sample_nouns_alt.csv --tag glove_alt
-python run_pipeline.py --mode glove --lexicon data/morpholex_nouns.csv --tag glove_morpholex
-python run_pipeline.py --mode subtlex # SUBTLEX ∩ GloVe, subsample 30k (seed=0) with rank/hubness
+python run_pipeline.py --mode demo      # planted lexicon; no download
+python run_pipeline.py --mode morpholex # MorphoLex nouns ∩ GloVe 50d
+python run_pipeline.py --mode both      # default (demo + morpholex)
+python run_pipeline.py --mode morpholex --whiten-d 0
+python run_pipeline.py --mode subtlex   # SUBTLEX ∩ GloVe, subsample 30k (seed=0)
 python run_pipeline.py --mode subtlex --max-words 25000 --seed 0
+python run_pipeline.py --mode ladec     # LADEC compounds ∩ GloVe
+python score_word.py dog --lexicon data/morpholex_nouns.csv
 python score_word.py dog --lexicon data/subtlex_glove.csv
 ```
 
@@ -74,15 +74,13 @@ for opaque items). The residuals recover that ranking — planted transparent
 words get much lower opacity than monomorphs / lexicalized multimorphs —
 which checks the measurement before you trust it on English.
 
-`glove` uses a noun CSV plus
+`morpholex` uses nouns from [MorphoLex-en](https://github.com/hugomailhot/MorphoLex-en)
+(Sánchez-Gutiérrez et al. 2018) plus
 [wordfreq](https://github.com/rspeer/wordfreq) Zipf frequencies and GloVe
 wiki-gigaword 50d meaning vectors (downloaded once, then cached under
-`data/cache/`). Default is the hand-classed `data/sample_nouns.csv`.
-`data/sample_nouns_alt.csv` is a disjoint hand set. `data/morpholex_nouns.csv`
-is built from [MorphoLex-en](https://github.com/hugomailhot/MorphoLex-en)
-(Sánchez-Gutiérrez et al. 2018): simplex → monomorph, affixed →
+`data/cache/`). Mapping: simplex → monomorph, affixed →
 transparent_multi, 2+ roots → opaque_multi (compounds; MorphoLex has no
-human transparency ratings).
+human transparency ratings). `data/morpholex_nouns.csv` is the working list.
 
 `subtlex` trains `g` on [SUBTLEX-US](https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus)
 (Brysbaert & New 2009): alphabetic types, intersected with GloVe so every
@@ -93,7 +91,13 @@ appear in MorphoLex keep those class labels; the rest are `unlabeled`. The
 hurdle models run only on the labeled overlap. The subsampled list is written
 to `data/subtlex_glove.csv` for `score_word.py`.
 
-On English, **Stage 1 holds** (more frequent nouns are more often
+`ladec` trains on [LADEC](https://doi.org/10.7939/r3-dyqx-9b36) closed compounds
+(Gagné, Spalding & Schmidtke 2019; `correctParse=yes`, letters only, ∩ GloVe).
+Class is a median split on human predictability (`ratingcmp`). All items are
+multimorphemic, so the frequency slope is the Stage-2 test (opacity among
+words that have parts). Zipf is LADEC's SUBTLEX `Zipfvalue` when present.
+
+On MorphoLex, **Stage 1 holds** (more frequent nouns are more often
 monomorphemic). After the centroid adjustment and all-but-the-top,
 morphological class ranks as planted: monomorphs most opaque, transparent
 multimorphs least, and the frequency slope is positive (including among
@@ -120,8 +124,8 @@ more opaque, which is the downstream prediction of the form–meaning cost model
 
 ## What this is not
 
-- Not a morpheme parser. `n_morphemes` / `class` on the English sample are
-  coarse hand labels for slicing the results, not inputs to `g`.
+- Not a morpheme parser. `n_morphemes` / `class` come from MorphoLex or LADEC
+  for slicing results, not as inputs to `g`.
 - Not an LLM-as-judge transparency rating (easy to add later; validate
   against LADEC / Libben norms if you do).
 - Vector reliability is not split-half estimated (GloVe is a single dump).
@@ -131,7 +135,7 @@ more opaque, which is the downstream prediction of the form–meaning cost model
 ## Layout
 
 ```
-opacity/lexicon.py     sample / MorphoLex / SUBTLEX-US lists + Zipf frequencies
+opacity/lexicon.py     MorphoLex / SUBTLEX-US / LADEC lists + Zipf frequencies
 opacity/vectors.py     GloVe download / cache / all-but-the-top / hubness
 opacity/synthetic.py   planted-opacity lexicon
 opacity/model.py       character n-gram → Ridge → meaning
