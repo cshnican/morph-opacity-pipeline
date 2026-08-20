@@ -22,11 +22,16 @@ GLOVE_URL = (
     "glove-wiki-gigaword-50/glove-wiki-gigaword-50.gz"
 )
 GLOVE_DIM = 50
+GLOVE_EL_URL = (
+    "https://huggingface.co/DFKI/glove-el-cc100/resolve/main/el_embeddings.txt"
+)
+GLOVE_EL_DIM = 300
+GLOVE_EL_CACHE = CACHE_DIR / "glove_el_subtlex.npz"
 
 
-def _open_glove_stream(url: str = GLOVE_URL):
+def _open_glove_stream(url: str = GLOVE_URL, timeout: int = 300):
     req = urllib.request.Request(url, headers={"User-Agent": "morph-opacity-pipeline"})
-    raw = urllib.request.urlopen(req, timeout=300)
+    raw = urllib.request.urlopen(req, timeout=timeout)
     if url.endswith(".gz"):
         return gzip.GzipFile(fileobj=raw)
     return raw
@@ -37,20 +42,26 @@ def load_glove_for_vocab(
     cache_path: Path | None = None,
     url: str = GLOVE_URL,
     dim: int = GLOVE_DIM,
+    timeout: int = 300,
+    progress_every: int = 0,
 ) -> dict[str, np.ndarray]:
     """
     Return {word: vector} for the intersection of `vocab` and GloVe.
-    Caches the filtered subset so later runs don't re-download.
+    Matching is case-folded. Caches the filtered subset so later runs
+    don't re-download.
     """
     cache_path = cache_path or (CACHE_DIR / "glove_sample.npz")
-    vocab_set = set(w.lower() for w in vocab)
+    folded_to_orig: dict[str, str] = {}
+    for w in vocab:
+        folded_to_orig.setdefault(str(w).casefold(), str(w).casefold())
+    vocab_set = set(folded_to_orig)
 
     stored: dict[str, np.ndarray] = {}
     if cache_path.exists():
         blob = np.load(cache_path, allow_pickle=True)
         words = blob["words"].tolist()
         vecs = blob["vectors"]
-        stored = {w: vecs[i] for i, w in enumerate(words)}
+        stored = {str(w).casefold(): vecs[i] for i, w in enumerate(words)}
         missing = vocab_set - set(stored)
         if not missing:
             return {w: stored[w] for w in vocab_set if w in stored}
@@ -59,10 +70,12 @@ def load_glove_for_vocab(
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     found: dict[str, np.ndarray] = {}
-    with _open_glove_stream(url) as fh:
-        text = io.TextIOWrapper(fh, encoding="utf-8")
+    n_lines = 0
+    with _open_glove_stream(url, timeout=timeout) as fh:
+        text = io.TextIOWrapper(fh, encoding="utf-8", errors="replace")
         first = True
         for line in text:
+            n_lines += 1
             parts = line.rstrip().split(" ")
             if first and len(parts) == 2 and parts[0].isdigit():
                 first = False
@@ -70,15 +83,17 @@ def load_glove_for_vocab(
             first = False
             if not parts:
                 continue
-            w = parts[0]
+            w = parts[0].casefold()
             if w in missing and len(parts) > dim:
                 found[w] = np.asarray(parts[1 : 1 + dim], dtype=np.float32)
                 if len(found) == len(missing):
                     break
+            if progress_every and n_lines % progress_every == 0:
+                print(f"  scanned {n_lines:,} embedding rows, found {len(found)}/{len(missing)}")
 
     stored.update(found)
     if not any(w in stored for w in vocab_set):
-        raise RuntimeError("GloVe download succeeded but matched 0 vocabulary items")
+        raise RuntimeError("embedding download succeeded but matched 0 vocabulary items")
 
     words = np.array(list(stored.keys()))
     vectors = np.stack([stored[w] for w in words])

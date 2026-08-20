@@ -22,6 +22,10 @@ SUBTLEX_URL = (
     "https://raw.githubusercontent.com/cltl/python-for-text-analysis/master/"
     "Data/SUBTLEX-US/SUBTLEXus74286wordstextversion.txt"
 )
+SUBTLEX_GR_PATH = DATA_DIR / "external" / "SUBTLEX-GR_restricted.txt"
+SUBTLEX_GR_GLOVE = DATA_DIR / "subtlex_gr_glove.csv"
+SUBTLEX_GR_URL = "https://www.bcbl.eu/sites/default/files/files/SUBTLEX-GR_restricted.txt"
+_GREEK_WORD = r"^[\u0370-\u03ff\u1f00-\u1fff]+$"
 SUBTLEX_POS_PATH = DATA_DIR / "external" / "SUBTLEX-US_POS_Zipf.xlsx"
 SUBTLEX_POS_URL = "https://osf.io/download/55d4847a8c5e4a5fe4a6c8d2/"
 
@@ -332,4 +336,40 @@ def load_subtlex_us(
         "note",
         "log_freq",
     ]
+    return df[keep].reset_index(drop=True)
+
+
+def download_subtlex_gr(path: Path | None = None, url: str = SUBTLEX_GR_URL) -> Path:
+    path = path or SUBTLEX_GR_PATH
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "morph-opacity-pipeline"})
+    with urllib.request.urlopen(req, timeout=180) as src, path.open("wb") as dst:
+        dst.write(src.read())
+    return path
+
+
+def load_subtlex_gr(path: Path | None = None, min_zipf: float = 0.0) -> pd.DataFrame:
+    """SUBTLEX-GR types (Dimitropoulou et al. 2010), Greek letters only.
+
+    Zipf is log10(SUBTLEX_WF)+3 from frequency per million. No morphology
+    labels; class is unlabeled.
+    """
+    path = download_subtlex_gr(path)
+    raw = pd.read_csv(path, sep="\t", skiprows=4, quotechar='"')
+    raw.columns = [c.strip().strip('"') for c in raw.columns]
+    df = raw.rename(columns={"Word": "word"}).copy()
+    df["word"] = df["word"].astype(str).str.strip().str.casefold()
+    df = df.loc[df["word"].str.fullmatch(_GREEK_WORD)].drop_duplicates("word")
+    wf = pd.to_numeric(df["SUBTLEX_WF"], errors="coerce")
+    df["zipf_freq"] = wf.map(lambda x: math.log10(max(float(x), 1e-12)) + 3.0)
+    df = df.loc[df["zipf_freq"].notna() & (df["zipf_freq"] >= min_zipf)].copy()
+    df["length"] = df["word"].str.len()
+    df["class"] = "unlabeled"
+    df["n_morphemes"] = pd.NA
+    df["is_monomorph"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
+    df["note"] = "subtlex-gr"
+    df["log_freq"] = df["zipf_freq"]
+    keep = ["word", "zipf_freq", "length", "class", "n_morphemes", "is_monomorph", "note", "log_freq"]
     return df[keep].reset_index(drop=True)

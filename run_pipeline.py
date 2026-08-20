@@ -4,7 +4,7 @@
   python run_pipeline.py --mode morpholex  # MorphoLex nouns ∩ GloVe
   python run_pipeline.py --mode subtlex  # SUBTLEX-US ∩ GloVe (downloads once)
   python run_pipeline.py --mode ladec    # LADEC compounds ∩ GloVe
-  python run_pipeline.py --mode both     # default (demo + morpholex)
+  python run_pipeline.py --mode subtlex-gr  # SUBTLEX-GR ∩ Greek GloVe
 """
 
 from __future__ import annotations
@@ -20,16 +20,21 @@ import pandas as pd
 from opacity.analyze import fit_models, join_scores, model_table, summarize_by_class
 from opacity.lexicon import (
     SUBTLEX_GLOVE,
+    SUBTLEX_GR_GLOVE,
     SUBTLEX_NOUNS_GLOVE,
     load_ladec_compounds,
     load_morpholex_nouns,
     load_word_csv,
+    load_subtlex_gr,
     load_subtlex_us,
 )
 from opacity.plot import plot_opacity_by_class, plot_opacity_vs_freq
 from opacity.scores import cross_validated_opacity
 from opacity.synthetic import make_synthetic_lexicon
 from opacity.vectors import (
+    GLOVE_EL_CACHE,
+    GLOVE_EL_DIM,
+    GLOVE_EL_URL,
     PAIRWISE_MAX_N,
     all_but_the_top,
     attach_vectors,
@@ -218,9 +223,63 @@ def run_subtlex(
     return df
 
 
+def run_subtlex_gr(
+    seed: int = 0,
+    whiten_d: int = 2,
+    min_zipf: float = 0.0,
+    max_words: int | None = None,
+    tag: str = "glove_subtlex_gr",
+) -> pd.DataFrame:
+    if max_words is None:
+        max_words = PAIRWISE_MAX_N
+    lexicon = load_subtlex_gr(min_zipf=min_zipf)
+    print(f"SUBTLEX-GR: {len(lexicon)} Greek-letter types (min_zipf={min_zipf})")
+    print("intersecting with Greek GloVe (CC100 300d; streams ~9GB on the first miss)…")
+    vectors = load_glove_for_vocab(
+        lexicon["word"].tolist(),
+        cache_path=GLOVE_EL_CACHE,
+        url=GLOVE_EL_URL,
+        dim=GLOVE_EL_DIM,
+        timeout=7200,
+        progress_every=200_000,
+    )
+    lexicon, mat = attach_vectors(lexicon, vectors)
+    n_pool = len(lexicon)
+    print(f"in Greek GloVe: {n_pool} types")
+    if max_words is not None and n_pool > max_words:
+        print(f"subsample {max_words}/{n_pool} (seed={seed})")
+        lexicon, mat = _subsample_aligned(lexicon, mat, max_words, seed)
+    SUBTLEX_GR_GLOVE.parent.mkdir(parents=True, exist_ok=True)
+    save_cols = [c for c in ["word", "zipf_freq", "length", "class", "n_morphemes", "note"] if c in lexicon.columns]
+    lexicon[save_cols].to_csv(SUBTLEX_GR_GLOVE, index=False)
+    meta = {
+        "seed": seed,
+        "n": int(len(lexicon)),
+        "n_pool": int(n_pool),
+        "min_zipf": min_zipf,
+        "pairwise_max_n": PAIRWISE_MAX_N,
+        "embeddings": "DFKI/glove-el-cc100",
+        "lexicon": str(SUBTLEX_GR_GLOVE),
+    }
+    meta_path = SUBTLEX_GR_GLOVE.with_suffix(".json")
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+    print(f"wrote GloVe-filtered lexicon → {SUBTLEX_GR_GLOVE}")
+    if whiten_d:
+        print(f"all-but-the-top: dropping {whiten_d} leading PC(s) (fit on train folds)")
+        lexicon = _with_hubness(lexicon, all_but_the_top(mat, n_components=whiten_d))
+    else:
+        lexicon = _with_hubness(lexicon, mat)
+    scores = cross_validated_opacity(
+        lexicon["word"], mat, n_splits=5, seed=seed, whiten_d=whiten_d
+    )
+    df = join_scores(lexicon, scores)
+    _write_outputs(tag, df, "SUBTLEX-GR ∩ Greek GloVe")
+    return df
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--mode", choices=("demo", "morpholex", "glove", "subtlex", "ladec", "both"), default="both")
+    p.add_argument("--mode", choices=("demo", "morpholex", "glove", "subtlex", "subtlex-gr", "ladec", "both"), default="both")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
         "--whiten-d",
@@ -289,6 +348,15 @@ def main() -> None:
         )
     if args.mode == "ladec":
         run_ladec(seed=args.seed, whiten_d=args.whiten_d)
+    if args.mode == "subtlex-gr":
+        tag = args.tag if args.tag != "glove" else "glove_subtlex_gr"
+        run_subtlex_gr(
+            seed=args.seed,
+            whiten_d=args.whiten_d,
+            min_zipf=args.min_zipf,
+            max_words=args.max_words,
+            tag=tag,
+        )
 
 
 if __name__ == "__main__":

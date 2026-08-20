@@ -48,7 +48,7 @@ python run_pipeline.py --mode morpholex # MorphoLex nouns ∩ GloVe 50d
 python run_pipeline.py --mode both      # default (demo + morpholex)
 python run_pipeline.py --mode morpholex --whiten-d 0
 python run_pipeline.py --mode subtlex   # SUBTLEX ∩ GloVe, subsample 30k (seed=0)
-python run_pipeline.py --mode subtlex --max-words 25000 --seed 0
+python run_pipeline.py --mode subtlex-gr  # SUBTLEX-GR ∩ Greek GloVe 300d
 python run_pipeline.py --mode ladec     # LADEC compounds ∩ GloVe
 python score_word.py dog --lexicon data/morpholex_nouns.csv
 python score_word.py dog --lexicon data/subtlex_glove.csv
@@ -90,6 +90,15 @@ memory (~48 GB; n×n float32). Zipf is `log10(SUBTLWF)+3`. Words that also
 appear in MorphoLex keep those class labels; the rest are `unlabeled`. The
 hurdle models run only on the labeled overlap. The subsampled list is written
 to `data/subtlex_glove.csv` for `score_word.py`.
+
+`subtlex-gr` is the same pipeline on Modern Greek: [SUBTLEX-GR](https://www.bcbl.eu/databases/subtlex-gr/)
+(Dimitropoulou, Duñabeitia, Avilés, Corral & Carreiras 2010) types
+intersected with [Greek GloVe](https://huggingface.co/DFKI/glove-el-cc100)
+(CC100 300d; Gurgurov, Korencič & Fischer 2024), then subsampled to 30,000.
+Zipf is `log10(SUBTLEX_WF)+3`. There are no morphology labels, so class is
+`unlabeled` and only the overall frequency slope is reported. The first run
+streams the ~9 GB embedding file and caches the intersection under
+`data/cache/glove_el_subtlex.npz`.
 
 `ladec` trains on [LADEC](https://doi.org/10.7939/r3-dyqx-9b36) closed compounds
 (Gagné, Spalding & Schmidtke 2019; `correctParse=yes`, letters only, ∩ GloVe).
