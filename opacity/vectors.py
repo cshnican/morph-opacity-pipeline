@@ -1,4 +1,4 @@
-"""Meaning vectors: GloVe lookup, or planted synthetic vectors."""
+"""Meaning vectors: GloVe lookup."""
 
 from __future__ import annotations
 

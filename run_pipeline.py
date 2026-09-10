@@ -1,6 +1,5 @@
-"""Run the morphological-opacity pipeline.
+"""Run the morphological-transparency pipeline.
 
-  python run_pipeline.py --mode demo     # planted lexicon (always works)
   python run_pipeline.py --mode morpholex  # MorphoLex nouns ∩ GloVe
   python run_pipeline.py --mode subtlex  # SUBTLEX-US ∩ GloVe (downloads once)
   python run_pipeline.py --mode ladec    # LADEC compounds ∩ GloVe
@@ -15,9 +14,8 @@ import os
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
-from opacity.analyze import fit_models, join_scores, model_table, summarize_by_class
+from opacity.analyze import ensure_transparency, fit_models, join_scores, model_table
 from opacity.lexicon import (
     SUBTLEX_GLOVE,
     SUBTLEX_GR_GLOVE,
@@ -28,9 +26,8 @@ from opacity.lexicon import (
     load_subtlex_gr,
     load_subtlex_us,
 )
-from opacity.plot import plot_opacity_by_class, plot_opacity_vs_freq
+from opacity.plot import plot_transparency_vs_freq
 from opacity.scores import cross_validated_opacity
-from opacity.synthetic import make_synthetic_lexicon
 from opacity.vectors import (
     GLOVE_EL_CACHE,
     GLOVE_EL_DIM,
@@ -48,31 +45,23 @@ FIG = ROOT / "figures"
 
 
 def _write_outputs(tag: str, df: pd.DataFrame, title_stem: str) -> None:
+    df = ensure_transparency(df)
     OUT.mkdir(parents=True, exist_ok=True)
     FIG.mkdir(parents=True, exist_ok=True)
     scores_path = OUT / f"{tag}_scores.csv"
     df.to_csv(scores_path, index=False)
 
-    by_class = summarize_by_class(df)
-    by_class.to_csv(OUT / f"{tag}_by_class.csv", index=False)
-
     models = fit_models(df)
     table = model_table(models)
     table.to_csv(OUT / f"{tag}_regression.csv", index=False)
 
-    plot_opacity_vs_freq(df, FIG / f"{tag}_opacity_vs_freq.png", f"{title_stem}: adjusted opacity vs frequency")
-    plot_opacity_by_class(df, FIG / f"{tag}_opacity_by_class.png", f"{title_stem}: adjusted opacity by class")
-    if "opacity_raw" in df.columns:
-        plot_opacity_vs_freq(
-            df,
-            FIG / f"{tag}_opacity_raw_vs_freq.png",
-            f"{title_stem}: raw opacity vs frequency",
-            y="opacity_raw",
-        )
+    plot_transparency_vs_freq(
+        df, FIG / f"{tag}_transparency_vs_freq.png", f"{title_stem}: transparency vs frequency"
+    )
 
     print(f"\n=== {tag} ===")
     print(f"n = {len(df)} words")
-    print(by_class.to_string(index=False, float_format=lambda x: f"{x:6.3f}"))
+    print(f"mean transparency = {df['transparency'].mean():.3f}")
     print("\nregressions (term zipf_freq is the frequency slope):")
     freq_rows = table[table["term"] == "zipf_freq"]
     print(freq_rows.to_string(index=False, float_format=lambda x: f"{x: .4f}"))
@@ -87,15 +76,6 @@ def _with_hubness(lexicon: pd.DataFrame, mat) -> pd.DataFrame:
     out = lexicon.copy()
     out["hubness"] = knn_mean_cosine(mat)
     return out
-
-
-def run_demo(seed: int = 0) -> pd.DataFrame:
-    lexicon, vectors = make_synthetic_lexicon(seed=seed)
-    lexicon = _with_hubness(lexicon, vectors)
-    scores = cross_validated_opacity(lexicon["word"], vectors, n_splits=5, seed=seed)
-    df = join_scores(lexicon, scores)
-    _write_outputs("demo", df, "Planted lexicon")
-    return df
 
 
 def run_glove(
@@ -194,7 +174,7 @@ def run_subtlex(
         lexicon, mat = _subsample_aligned(lexicon, mat, max_words, seed)
     out_csv = SUBTLEX_NOUNS_GLOVE if pos else SUBTLEX_GLOVE
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    save_cols = [c for c in ["word", "zipf_freq", "length", "class", "pos", "n_morphemes", "note"] if c in lexicon.columns]
+    save_cols = [c for c in ["word", "zipf_freq", "length", "pos", "n_morphemes", "note"] if c in lexicon.columns]
     lexicon[save_cols].to_csv(out_csv, index=False)
     meta = {
         "seed": seed,
@@ -250,7 +230,7 @@ def run_subtlex_gr(
         print(f"subsample {max_words}/{n_pool} (seed={seed})")
         lexicon, mat = _subsample_aligned(lexicon, mat, max_words, seed)
     SUBTLEX_GR_GLOVE.parent.mkdir(parents=True, exist_ok=True)
-    save_cols = [c for c in ["word", "zipf_freq", "length", "class", "n_morphemes", "note"] if c in lexicon.columns]
+    save_cols = [c for c in ["word", "zipf_freq", "length", "n_morphemes", "note"] if c in lexicon.columns]
     lexicon[save_cols].to_csv(SUBTLEX_GR_GLOVE, index=False)
     meta = {
         "seed": seed,
@@ -279,7 +259,11 @@ def run_subtlex_gr(
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--mode", choices=("demo", "morpholex", "glove", "subtlex", "subtlex-gr", "ladec", "both"), default="both")
+    p.add_argument(
+        "--mode",
+        choices=("morpholex", "glove", "subtlex", "subtlex-gr", "ladec"),
+        default="morpholex",
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
         "--whiten-d",
@@ -320,9 +304,7 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    if args.mode in ("demo", "both"):
-        run_demo(seed=args.seed)
-    if args.mode in ("morpholex", "both"):
+    if args.mode == "morpholex":
         run_morpholex(seed=args.seed, whiten_d=args.whiten_d)
     if args.mode == "glove":
         if args.lexicon is None:

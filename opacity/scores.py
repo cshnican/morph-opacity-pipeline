@@ -1,4 +1,4 @@
-"""Cross-validated form→meaning residuals = per-word opacity."""
+"""Cross-validated form→meaning residuals = per-word transparency."""
 
 from __future__ import annotations
 
@@ -26,17 +26,16 @@ def cross_validated_opacity(
     how well the held-out meaning is predicted.
 
         cosine         = cos(g(form_w), v_w)
-        cosine_null    = cos(mean(v_train), v_w)     # form-blind baseline
-        opacity_raw    = 1 - cosine
-        opacity        = 1 - (cosine - cosine_null)  # form must beat centroid
+        cosine_null    = cos(mean(v_train), v_w)   # form-blind baseline
+        transparency   = cosine − cosine_null      # form must beat centroid
         rank_frac      = fraction of lexicon meanings closer to g(form_w)
 
     Held-out scoring is required: otherwise g could memorize laptop as a
     whole string and look spuriously transparent.
 
     Raw cosine is inflated for frequent GloVe hubs (they sit near the
-    centroid, so a shrunk predictor matches them for free). Adjusted
-    opacity asks whether form recovers *this* meaning beyond that.
+    centroid, so a shrunk predictor matches them for free). Transparency
+    asks whether form recovers *this* meaning beyond that.
 
     If `whiten_d` > 0, each fold drops that many leading PCs estimated on
     *training* vectors only (all-but-the-top), then scores in that subspace.
@@ -80,8 +79,7 @@ def cross_validated_opacity(
         "word": words,
         "cosine": cosine,
         "cosine_null": cosine_null,
-        "opacity_raw": 1.0 - cosine,
-        "opacity": 1.0 - (cosine - cosine_null),
+        "transparency": cosine - cosine_null,
         "fold": fold_id,
     }
     if compute_rank:
@@ -128,7 +126,7 @@ def score_query_words(
     alpha: float = 8.0,
     whiten_d: int = 2,
 ) -> pd.DataFrame:
-    """Opacity for arbitrary words using a fixed training lexicon.
+    """Transparency for arbitrary words using a fixed training lexicon.
 
     Each query is scored by a model trained on the lexicon *without* that
     word (if it is in the lexicon). Words never seen in training are the
@@ -147,8 +145,7 @@ def score_query_words(
                     "held_out": False,
                     "cosine": np.nan,
                     "cosine_null": np.nan,
-                    "opacity_raw": np.nan,
-                    "opacity": np.nan,
+                    "transparency": np.nan,
                     "rank_frac": np.nan,
                     "error": "not in GloVe",
                 }
@@ -179,8 +176,7 @@ def score_query_words(
                 "held_out": True,
                 "cosine": cosine,
                 "cosine_null": cosine_null,
-                "opacity_raw": 1.0 - cosine,
-                "opacity": 1.0 - (cosine - cosine_null),
+                "transparency": cosine - cosine_null,
                 "rank_frac": rank,
                 "error": "",
             }

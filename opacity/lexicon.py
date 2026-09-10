@@ -6,7 +6,6 @@ import math
 import urllib.request
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from wordfreq import zipf_frequency
 
@@ -38,16 +37,7 @@ def load_word_csv(path: Path | None = None) -> pd.DataFrame:
     df = df[df["word"].str.fullmatch(r"[a-z]+")].copy()
     if "n_morphemes" in df.columns:
         df["n_morphemes"] = pd.to_numeric(df["n_morphemes"], errors="coerce")
-        df["is_monomorph"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
-        known = df["n_morphemes"].notna()
-        df.loc[known, "is_monomorph"] = df.loc[known, "n_morphemes"] == 1
-    else:
-        df["n_morphemes"] = pd.NA
-        df["is_monomorph"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
-    if "class" not in df.columns:
-        df["class"] = "unlabeled"
-    else:
-        df["class"] = df["class"].fillna("unlabeled")
+    df = df.drop(columns=[c for c in ("class", "is_monomorph") if c in df.columns], errors="ignore")
     df["length"] = df["word"].str.len()
     if "zipf_freq" not in df.columns:
         df["zipf_freq"] = [zipf_frequency(w, "en") for w in df["word"]]
@@ -65,14 +55,9 @@ def build_morpholex_nouns(
 ) -> pd.DataFrame:
     """Nouns from MorphoLex-en (Sánchez-Gutiérrez et al. 2018), not hand-coded.
 
-    Sheets are Prefix-Root-Suffix signatures. Mapping onto this pipeline:
-
-    - 0-1-0 (one root, no affixes) → monomorph
-    - 1 root + prefixes/suffixes → transparent_multi (derivational)
-    - 2+ roots → opaque_multi (compounds; MorphoLex has no transparency ratings)
-
-    Inflected forms are dropped when the stem is also in the noun list.
-    Large classes are subsampled so the Ridge CV stays tractable.
+    Sheets are Prefix-Root-Suffix signatures. Inflected forms are dropped when
+    the stem is also in the noun list. Large morphological signatures are
+    subsampled so the Ridge CV stays tractable.
     """
     from openpyxl import load_workbook
 
@@ -133,26 +118,27 @@ def build_morpholex_nouns(
             inflected.add(w)
     df = df.loc[~df["word"].isin(inflected)].copy()
 
-    def morpho_class(r) -> str:
+    def morpho_bucket(r) -> str:
         if r.n_root == 1 and r.n_pref == 0 and r.n_suff == 0:
-            return "monomorph"
+            return "simplex"
         if r.n_root >= 2:
-            return "opaque_multi"
-        return "transparent_multi"
+            return "multi_root"
+        return "affixed"
 
-    df["class"] = df.apply(morpho_class, axis=1)
+    df["_bucket"] = df.apply(morpho_bucket, axis=1)
     df["zipf_freq"] = [zipf_frequency(w, "en") for w in df["word"]]
     df = df.loc[df["zipf_freq"] >= min_zipf].copy()
 
     parts = []
-    for _, sub in df.groupby("class"):
+    for _, sub in df.groupby("_bucket"):
         if len(sub) > max_per_class:
             sub = sub.sample(n=max_per_class, random_state=seed)
         parts.append(sub)
     df = pd.concat(parts, ignore_index=True)
+    df = df.drop(columns=["_bucket"])
     df = df.sort_values("word").reset_index(drop=True)
 
-    keep = ["word", "n_morphemes", "class", "note", "n_pref", "n_root", "n_suff", "prs"]
+    keep = ["word", "n_morphemes", "note", "n_pref", "n_root", "n_suff", "prs"]
     out.parent.mkdir(parents=True, exist_ok=True)
     df[keep].to_csv(out, index=False)
     return df
@@ -168,9 +154,8 @@ def load_morpholex_nouns(path: Path | None = None, rebuild: bool = False) -> pd.
 def build_ladec_compounds(src: Path | None = None, out: Path | None = None) -> pd.DataFrame:
     """Closed compounds from LADEC (Gagné, Spalding & Schmidtke 2019).
 
-    correctParse=yes, letters only. Class is a median split on human
-    predictability (ratingcmp): high → transparent_multi, low → opaque_multi.
-    Zipf is LADEC's SUBTLEX Zipfvalue when present, else wordfreq.
+    correctParse=yes, letters only. Zipf is LADEC's SUBTLEX Zipfvalue when
+    present, else wordfreq.
     """
     src = src or LADEC_CSV
     out = out or LADEC_COMPOUNDS
@@ -194,10 +179,6 @@ def build_ladec_compounds(src: Path | None = None, out: Path | None = None) -> p
         df.loc[missing, "zipf_freq"] = [
             zipf_frequency(w, "en") for w in df.loc[missing, "word"]
         ]
-    med = float(df["ratingcmp"].median())
-    df["class"] = np.where(
-        df["ratingcmp"] >= med, "transparent_multi", "opaque_multi"
-    )
     df["n_morphemes"] = 2
     c1 = df["c1"] if "c1" in df.columns else ""
     c2 = df["c2"] if "c2" in df.columns else ""
@@ -205,7 +186,7 @@ def build_ladec_compounds(src: Path | None = None, out: Path | None = None) -> p
         f"{a}+{b} ratingcmp={r:.1f}"
         for a, b, r in zip(c1, c2, df["ratingcmp"])
     ]
-    keep = ["word", "n_morphemes", "class", "note", "ratingcmp", "zipf_freq"]
+    keep = ["word", "n_morphemes", "note", "ratingcmp", "zipf_freq"]
     extra = [c for c in ("c1", "c2") if c in df.columns]
     out.parent.mkdir(parents=True, exist_ok=True)
     df[keep + extra].to_csv(out, index=False)
@@ -271,7 +252,6 @@ def attach_subtlex_pos(df: pd.DataFrame) -> pd.DataFrame:
 def load_subtlex_us(
     path: Path | None = None,
     min_zipf: float = 0.0,
-    morpholex: Path | None = None,
     pos: str | None = None,
 ) -> pd.DataFrame:
     """SUBTLEX-US types (Brysbaert & New 2009), letters only.
@@ -279,7 +259,7 @@ def load_subtlex_us(
     If `pos` is set (e.g. \"Noun\"), load the POS+Zipf spreadsheet (Brysbaert,
     New & Keuleers 2012) and keep rows whose dominant CLAWS tag matches.
     Zipf is the official SUBTLEX Zipf-value when POS is used, otherwise
-    log10(SUBTLWF)+3. Morphology is unlabeled unless the word is in MorphoLex.
+    log10(SUBTLWF)+3.
     """
     if pos:
         xlsx = download_subtlex_pos()
@@ -303,36 +283,15 @@ def load_subtlex_us(
     df = df.loc[df["zipf_freq"].notna() & (df["zipf_freq"] >= min_zipf)].copy()
     df = df.sort_values(["zipf_freq", "word"], ascending=[False, True])
     df["length"] = df["word"].str.len()
-    df["class"] = "unlabeled"
     df["n_morphemes"] = pd.NA
-
-    ml_path = morpholex if morpholex is not None else MORPHOLEX_NOUNS
-    if ml_path.exists():
-        ml = pd.read_csv(ml_path, usecols=lambda c: c in {"word", "class", "n_morphemes", "note"})
-        ml["word"] = ml["word"].str.strip().str.lower()
-        ml = ml.drop_duplicates("word")
-        df = df.merge(ml, on="word", how="left", suffixes=("", "_ml"))
-        df["class"] = df["class_ml"].fillna(df["class"])
-        df["n_morphemes"] = df["n_morphemes_ml"].combine_first(df["n_morphemes"])
-        if "note_ml" in df.columns:
-            df["note"] = df["note_ml"].fillna(df["note"])
-        drop = [c for c in df.columns if c.endswith("_ml")]
-        df = df.drop(columns=drop)
-
-    df["n_morphemes"] = pd.to_numeric(df["n_morphemes"], errors="coerce")
-    df["is_monomorph"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
-    known = df["n_morphemes"].notna()
-    df.loc[known, "is_monomorph"] = df.loc[known, "n_morphemes"] == 1
     df["log_freq"] = df["zipf_freq"]
     df = attach_subtlex_pos(df)
     keep = [
         "word",
         "zipf_freq",
         "length",
-        "class",
         "pos",
         "n_morphemes",
-        "is_monomorph",
         "note",
         "log_freq",
     ]
@@ -353,8 +312,7 @@ def download_subtlex_gr(path: Path | None = None, url: str = SUBTLEX_GR_URL) -> 
 def load_subtlex_gr(path: Path | None = None, min_zipf: float = 0.0) -> pd.DataFrame:
     """SUBTLEX-GR types (Dimitropoulou et al. 2010), Greek letters only.
 
-    Zipf is log10(SUBTLEX_WF)+3 from frequency per million. No morphology
-    labels; class is unlabeled.
+    Zipf is log10(SUBTLEX_WF)+3 from frequency per million.
     """
     path = download_subtlex_gr(path)
     raw = pd.read_csv(path, sep="\t", skiprows=4, quotechar='"')
@@ -366,10 +324,7 @@ def load_subtlex_gr(path: Path | None = None, min_zipf: float = 0.0) -> pd.DataF
     df["zipf_freq"] = wf.map(lambda x: math.log10(max(float(x), 1e-12)) + 3.0)
     df = df.loc[df["zipf_freq"].notna() & (df["zipf_freq"] >= min_zipf)].copy()
     df["length"] = df["word"].str.len()
-    df["class"] = "unlabeled"
-    df["n_morphemes"] = pd.NA
-    df["is_monomorph"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
     df["note"] = "subtlex-gr"
     df["log_freq"] = df["zipf_freq"]
-    keep = ["word", "zipf_freq", "length", "class", "n_morphemes", "is_monomorph", "note", "log_freq"]
+    keep = ["word", "zipf_freq", "length", "note", "log_freq"]
     return df[keep].reset_index(drop=True)

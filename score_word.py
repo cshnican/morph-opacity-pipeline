@@ -1,4 +1,4 @@
-"""Score morphological opacity for one or more words.
+"""Score morphological transparency for one or more words.
 
   python score_word.py electrocardiogram
   python score_word.py dog laptop teacher
@@ -7,10 +7,10 @@
 
 Trains g(form)→meaning on the lexicon without the query word, then:
 
-  opacity = 1 − (cos(g(form), v) − cos(centroid, v))
+  transparency = cos(g(form), v) − cos(centroid, v)
 
-High opacity ≈ spelling did not beat a form-blind guess. Below 1 means
-form recovered this meaning better than the training-set average.
+High transparency ≈ spelling beat a form-blind guess. Below 0 means
+form recovered this meaning worse than the training-set average.
 """
 
 from __future__ import annotations
@@ -69,8 +69,7 @@ def main() -> None:
     show = scores[
         [
             "word",
-            "opacity",
-            "opacity_raw",
+            "transparency",
             "cosine",
             "cosine_null",
             "rank_frac",
