@@ -10,6 +10,8 @@ data/cache/
 data/external/
 data/subtlex_glove.csv
 data/subtlex_glove.json
+data/subtlex_gr_glove.csv
+data/subtlex_gr_glove.json
 *.npy
 *.pt
 
