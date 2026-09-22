@@ -33,12 +33,13 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
-python run_pipeline.py --mode morpholex # MorphoLex nouns ∩ GloVe 50d (default)
+python run_pipeline.py --mode morpholex # MorphoLex ∩ GloVe 50d (default)
 python run_pipeline.py --mode morpholex --whiten-d 0
 python run_pipeline.py --mode subtlex   # SUBTLEX ∩ GloVe, subsample 30k (seed=0)
 python run_pipeline.py --mode subtlex-gr  # SUBTLEX-GR ∩ Greek GloVe 300d
 python run_pipeline.py --mode ladec     # LADEC compounds ∩ GloVe
-python score_word.py dog --lexicon data/morpholex_nouns.csv
+python run_pipeline.py --mode all       # all four lexicons + English/Greek figures
+python score_word.py dog --lexicon data/morpholex_words.csv
 python score_word.py dog --lexicon data/subtlex_glove.csv
 ```
 
@@ -51,13 +52,18 @@ Outputs:
 |---|---|
 | `outputs/{tag}_scores.csv` | per-word cosine, centroid baseline, transparency, retrieval rank |
 | `outputs/{tag}_regression.csv` | OLS coefficients (`transparency ~ frequency` and covariates) |
-| `figures/{tag}_transparency_vs_freq.png` | transparency vs Zipf (colored by SUBTLEX POS when available) |
+| `figures/{tag}_transparency_vs_freq.png` | transparency vs Zipf |
+| `figures/transparency_vs_freq_english.png` | English (LADEC, MorphoLex, SUBTLEX-US) |
+| `figures/transparency_vs_freq_greek.png` | Greek (SUBTLEX-GR) |
 
-`morpholex` uses nouns from [MorphoLex-en](https://github.com/hugomailhot/MorphoLex-en)
+`morpholex` uses all alphabetic types from [MorphoLex-en](https://github.com/hugomailhot/MorphoLex-en)
 (Sánchez-Gutiérrez et al. 2018) plus
 [wordfreq](https://github.com/rspeer/wordfreq) Zipf frequencies and GloVe
 wiki-gigaword 50d meaning vectors (downloaded once, then cached under
-`data/cache/`). `data/morpholex_nouns.csv` is the working list.
+`data/cache/`). Inflected forms are dropped when the stem is also in the
+list. After the GloVe intersect the list is randomly subsampled to 30,000
+(`--seed`) so rank and hubness fit in memory. `data/morpholex_words.csv` is
+the full working list.
 
 `subtlex` trains `g` on [SUBTLEX-US](https://www.ugent.be/pp/experimentele-psychologie/en/research/documents/subtlexus)
 (Brysbaert & New 2009): alphabetic types, intersected with GloVe so every
@@ -75,10 +81,11 @@ and caches the intersection under `data/cache/glove_el_subtlex.npz`.
 
 `ladec` trains on [LADEC](https://doi.org/10.7939/r3-dyqx-9b36) closed compounds
 (Gagné, Spalding & Schmidtke 2019; `correctParse=yes`, letters only, ∩ GloVe).
-Zipf is LADEC's SUBTLEX `Zipfvalue` when present.
+Every item is a two-part `c1+c2` concatenation; they are scored as one group.
+Zipf is LADEC's native SUBTLEX `Zipfvalue`; items without that value are dropped.
 
 The coefficient of interest is `zipf_freq` in `transparency ~ frequency`
-(with and without length / hubness). Negative means more frequent → less
+(with and without a hubness covariate). Negative means more frequent → less
 transparent. Hubness (mean cosine to 5 nearest neighbors) is a typicality
 control, not a residualization on frequency itself.
 
